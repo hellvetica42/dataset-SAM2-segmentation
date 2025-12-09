@@ -8,12 +8,13 @@ from pathlib import Path
 from tkinter import Tk, filedialog
 
 # === SAM2 CHECKPOINT ===
-CKPT_PATH = "/root/dataset-SAM2-segmentation/sam2/checkpoints/sam2.1_hiera_large.pt"  # <-- adjust as needed
+# CHANGE THIS PATH TO YOUR ACTUAL CHECKPOINT LOCATION
+CKPT_PATH = "/home/ubuntu/dataset-SAM2-segmentation/sam2/checkpoints/sam2.1_hiera_large.pt"
 CFG_PATH_DEFAULT = "configs/sam2.1/sam2.1_hiera_l.yaml"   
 # =======================
 
-from video_utils import iter_video_frames
 from sam_utils import SAM2Runner
+from video_utils import iter_pictures
 
 
 # ---- COCO RLE helpers ----
@@ -33,6 +34,7 @@ def rle_encode_uncompressed(mask: np.ndarray):
     counts.append(run_len)
     return {"counts": counts, "size": [int(H), int(W)]}
 
+
 def rle_encode_coco(mask: np.ndarray):
     """Compressed RLE via pycocotools if available; else uncompressed."""
     try:
@@ -45,45 +47,51 @@ def rle_encode_coco(mask: np.ndarray):
         return rle_encode_uncompressed(mask)
 
 
-
-def process_one_pair(video_path: Path, json_path: Path, out_json_path: Path,
-                     sam_cfg: str, category_filter: int | None, seconds_limit: int):
-    """Open video+json, run SAM2 on all detections, add 'segmentation' to each ann, write new JSON."""
-    # Load the JSON to be saved and map id -> ann
+def process_images(images_dir: Path, json_path: Path, out_json_path: Path,
+                   sam_cfg: str, category_filter: int | None):
+    """Process all images with their annotations and add segmentation masks."""
+    
+    # Load the COCO JSON
     with open(json_path, "r") as f:
         coco = json.load(f)
+    
+    # Create mapping of annotation ID to annotation object
     ann_by_id = {ann["id"]: ann for ann in coco["annotations"]}
 
-    # Init SAM2 once
-    sam = SAM2Runner(cfg_path=sam_cfg, ckpt_path=CKPT_PATH, device="cuda")
+    # Initialize SAM2 once
+    print(f"Initializing SAM2 model...")
+    print(f"  Config: {sam_cfg}")
+    print(f"  Checkpoint: {CKPT_PATH}")
+    
+    if not Path(CKPT_PATH).exists():
+        raise FileNotFoundError(f"Checkpoint not found: {CKPT_PATH}\nPlease update CKPT_PATH in the script.")
+    
+    import torch
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"  Device: {device}")
+    if device == "cpu":
+        print(" Warning: Running on CPU. This will be slow. Consider using a GPU.")
+    
+    sam = SAM2Runner(cfg_path=sam_cfg, ckpt_path=CKPT_PATH, device=device)
 
-    # Frame limit from seconds (if any)
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        print(f"Cannot open video: {video_path}")
-        return False
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    cap.release()
-    max_frames = int(round(seconds_limit * fps)) if seconds_limit > 0 else None
-
-    print(f"Video: {video_path.name} | Frames: {total_frames} | FPS: {fps:.2f}")
-    if max_frames:
-        print(f"Processing will stop after {max_frames} frames (due to --seconds={seconds_limit})")
     print("Starting segmentation...")
 
-    processed_frames = 0
+    processed_images = 0
     updated_anns = 0
     last_print_time = time.time()
 
-    for frame_idx, frame_bgr, anns in iter_video_frames(str(video_path), str(json_path),
-                                                        category_filter=category_filter):
-        if max_frames is not None and frame_idx >= max_frames:
-            break
-
+    # Iterate through all images
+    for frame_idx, frame_bgr, anns in iter_pictures(str(images_dir), str(json_path), 
+                                                     category_filter=category_filter):
+        
+        # Extract bounding boxes from annotations
         boxes = [a["bbox"] for a in anns]
+        
         if boxes:
-            masks = sam.segment_boxes(frame_bgr, boxes)  # one mask per box, same order
+            # Run SAM2 segmentation
+            masks = sam.segment_boxes(frame_bgr, boxes)
+            
+            # Add segmentation to each annotation
             for ann_tmp, mask in zip(anns, masks):
                 coco_ann = ann_by_id.get(ann_tmp["id"])
                 if coco_ann is None:
@@ -91,26 +99,35 @@ def process_one_pair(video_path: Path, json_path: Path, out_json_path: Path,
                 coco_ann["segmentation"] = rle_encode_coco(mask)
                 updated_anns += 1
 
-        processed_frames += 1
-        if processed_frames % 500 == 0:
+        processed_images += 1
+        
+        # Progress logging every 50 images
+        if processed_images % 50 == 0:
             now = time.time()
             elapsed = now - last_print_time
             last_print_time = now
-            print(f"  Processed {processed_frames}/{max_frames or total_frames} frames "
-                  f"({updated_anns} annotations segmented) | {elapsed:.2f} seconds elapsed")
+            print(f"  Processed {processed_images} images ({updated_anns} annotations segmented) | {elapsed:.2f}s elapsed")
+            
+            out_json_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(out_json_path, "w") as f:
+                json.dump(coco, f)
+            print(f"  Saved intermediate results to: {out_json_path}")
 
     # Ensure output dir exists and save
     out_json_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_json_path, "w") as f:
         json.dump(coco, f)
 
-    print(f" Wrote: {out_json_path}  (Total annotations updated: {updated_anns})")
+    print(f"\n✓ Wrote: {out_json_path}")
+    print(f"  Total images processed: {processed_images}")
+    print(f"  Total annotations segmented: {updated_anns}")
     return True
 
 
 # ---- GUI pickers ----
 def pick_folder(title: str) -> Path:
-    root = Tk(); root.withdraw()
+    root = Tk()
+    root.withdraw()
     path = filedialog.askdirectory(title=title)
     root.destroy()
     if not path:
@@ -118,68 +135,58 @@ def pick_folder(title: str) -> Path:
     return Path(path)
 
 
+def pick_json_file(title: str) -> Path:
+    root = Tk()
+    root.withdraw()
+    path = filedialog.askopenfilename(
+        title=title,
+        filetypes=(
+            ("JSON files", "*.json"),
+            ("All files", "*.*")
+        )
+    )
+    root.destroy()
+    if not path:
+        raise SystemExit("Cancelled.")
+    return Path(path)
+
+
 def main():
-    ap = argparse.ArgumentParser(description="Batch add SAM2 segmentations into COCO JSONs via GUI folder pickers.")
-    ap.add_argument("--cfg", default=CFG_PATH_DEFAULT, help="SAM2 config path inside package")
-    ap.add_argument("--cat", type=int, default=None, help="only segment this category_id (e.g. 2). None=all")
-    ap.add_argument("--seconds", type=int, default=0, help="limit per-video processing in seconds (0=full video)")
-    ap.add_argument("--video_exts", default=".mp4,.mkv,.avi,.mov,.mpg,.mpeg",
-                    help="comma-separated video extensions to match")
+    ap = argparse.ArgumentParser(description="Add SAM2 segmentations to COCO JSON annotations for images.")
+    ap.add_argument("--cfg", default=CFG_PATH_DEFAULT, help="SAM2 config path")
+    ap.add_argument("--cat", type=int, default=None, help="Only segment this category_id (e.g. 1). None=all")
+    ap.add_argument("--image_exts", default=".png,.jpg,.jpeg",
+                    help="Comma-separated image extensions to match")
     args = ap.parse_args()
 
-    print("Select the videos folder…")
-    videos_dir = pick_folder("Select videos folder")
+    print("Select the images folder…") 
+    images_dir = pick_folder("Select images folder")
 
-    print("Select the labels (JSON) folder…")
-    labels_dir = pick_folder("Select labels (JSON) folder")
+    print("Select the JSON annotation file…")
+    json_path = pick_json_file("Select JSON annotation file")
+    
+    print(f"\nUsing:")
+    print(f"  Images folder: {images_dir}")
+    print(f"  JSON file: {json_path}")
 
-    # Output directory under common root
-    common_root = Path(os.path.commonpath([videos_dir.resolve(), labels_dir.resolve()]))
-    out_dir = common_root / "labels_with_segmentation"
+    # Output directory - save next to the images folder
+    out_dir = images_dir.parent / "labels_with_segmentation"
     out_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Output JSONs will be saved to: {out_dir}")
+    
+    # Use the same filename as input JSON
+    out_json = out_dir / json_path.name.replace(".json", "_segmented.json")
+    print(f"  Output will be saved to: {out_json}\n")
 
-    exts = {e.strip().lower() for e in args.video_exts.split(",") if e.strip()}
-    n_total = 0
-    n_done = 0
+    # Process all images once
+    process_images(
+        images_dir=images_dir,
+        json_path=json_path,
+        out_json_path=out_json,
+        sam_cfg=args.cfg,
+        category_filter=args.cat,
+    )
 
-    # Map stem -> json path for quick lookup
-    json_by_stem = {p.stem: p for p in labels_dir.glob("*.json")}
-
-    for vid in videos_dir.iterdir():
-        if not vid.is_file() or vid.suffix.lower() not in exts:
-            continue
-
-        stem = vid.stem
-        json_path = json_by_stem.get(stem)
-        n_total += 1
-
-        if json_path is None:
-            print(f"  No matching JSON for video: {vid.name} (expected {stem}.json in {labels_dir})")
-            continue
-
-        # Save as "<stem>_segmented.json"
-        out_json = out_dir / f"{stem}_segmented.json"
-
-        # Skip if already segmented
-        if out_json.exists():
-            print(f"⏩ Skipping {vid.name} — segmented JSON already exists: {out_json.name}")
-            continue
-
-        print(f"\n=== Processing: {vid.name}  +  {json_path.name} ===")
-        ok = process_one_pair(
-            video_path=vid,
-            json_path=json_path,
-            out_json_path=out_json,
-            sam_cfg=args.cfg,
-            category_filter=args.cat,
-            seconds_limit=args.seconds,
-        )
-        if ok:
-            n_done += 1
-
-    print(f"\nDone. Processed {n_done}/{n_total} matching video/json pairs.")
-    print(f"Output folder: {out_dir}")
+    print(f"\n✓ Done! Output: {out_json}")
 
 
 if __name__ == "__main__":
