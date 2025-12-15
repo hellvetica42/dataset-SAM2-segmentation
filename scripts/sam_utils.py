@@ -1,17 +1,17 @@
-
 import cv2
 import torch
 import numpy as np
-from sam2.build_sam import build_sam2
-from sam2.sam2_image_predictor import SAM2ImagePredictor
+
+from sam3.model_builder import build_sam3_image_model
+from sam3.model.sam3_image_processor import Sam3Processor
 
 
 def _boxes_xyxy_from_xywh(boxes_xywh):
     if not boxes_xywh:
         return np.empty((0, 4), dtype=np.float32)
     b = np.asarray(boxes_xywh, dtype=np.float32)
-    b[:, 2] = b[:, 0] + b[:, 2]  # x1
-    b[:, 3] = b[:, 1] + b[:, 3]  # y1
+    b[:, 2] = b[:, 0] + b[:, 2]  # x2 
+    b[:, 3] = b[:, 1] + b[:, 3]  # y2 
     return b[:, [0, 1, 2, 3]]
 
 
@@ -52,8 +52,10 @@ class SAM2Runner:
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = torch.device(device)
-        model = build_sam2(cfg_path, ckpt_path, device=self.device)
-        self.predictor = SAM2ImagePredictor(model)
+        
+        self.model = build_sam3_image_model(cfg_path, ckpt_path, device=self.device)
+        self.processor = Sam3Processor(self.model)
+        
 
     def segment_boxes(self, frame_bgr: np.ndarray, boxes_xywh):
         """
@@ -64,26 +66,33 @@ class SAM2Runner:
             return []
 
         img_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        self.predictor.set_image(img_rgb)
-
+        
+        text = "<ADD PROMPT TEXT>"
         boxes_xyxy = _boxes_xyxy_from_xywh(boxes_xywh)
-
+        
         with torch.inference_mode():
             if self.device.type == "cuda":
                 with torch.autocast("cuda", dtype=torch.bfloat16):
-                    masks, _scores, _ = self.predictor.predict(
-                        point_coords=None,
-                        point_labels=None,
-                        box=boxes_xyxy,
-                        multimask_output=False,   # single best per box
-                    )
+                    inputs = self.processor(
+                                images=img_rgb,
+                                text=text,
+                                input_boxes=boxes_xyxy,
+                                input_boxes_labels=[[1]],  # 1 = positive (include this region)
+                                return_tensors="pt"
+                            ).to(self.device) 
+                    
             else:
-                masks, _scores, _ = self.predictor.predict(
-                    point_coords=None,
-                    point_labels=None,
-                    box=boxes_xyxy,
-                    multimask_output=False,      
-                )
+                inputs = self.processor(
+                                images=img_rgb,
+                                text=text,
+                                input_boxes=boxes_xyxy,
+                                input_boxes_labels=[[1]],
+                                return_tensors="pt"
+                            ).to(self.device) 
+                
+            output = self.model(**inputs)
+                
+            masks, _, _scores = output["masks"], output["boxes"], output["scores"]
 
         best_masks = _normalize_masks_single_per_box(masks)
 
