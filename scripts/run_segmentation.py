@@ -9,11 +9,10 @@ from tkinter import Tk, filedialog
 
 # === SAM2 CHECKPOINT ===
 # CHANGE THIS PATH TO YOUR ACTUAL CHECKPOINT LOCATION
-CKPT_PATH = "/home/ubuntu/dataset-SAM2-segmentation/sam2/checkpoints/sam2.1_hiera_large.pt"
-CFG_PATH_DEFAULT = "configs/sam2.1/sam2.1_hiera_l.yaml"   
+CKPT_PATH = "/home/ubuntu/dataset-SAM2-segmentation/sam3/checkpoints/sam3.pt"  
 # =======================
 
-from sam_utils import SAM2Runner
+from sam_utils import SAM3Runner
 from video_utils import iter_pictures
 
 
@@ -48,7 +47,7 @@ def rle_encode_coco(mask: np.ndarray):
 
 
 def process_images(images_dir: Path, json_path: Path, out_json_path: Path,
-                   sam_cfg: str, category_filter: int | None):
+                   category_filter: int | None):
     """Process all images with their annotations and add segmentation masks."""
     
     # Load the COCO JSON
@@ -58,9 +57,8 @@ def process_images(images_dir: Path, json_path: Path, out_json_path: Path,
     # Create mapping of annotation ID to annotation object
     ann_by_id = {ann["id"]: ann for ann in coco["annotations"]}
 
-    # Initialize SAM2 once
-    print(f"Initializing SAM2 model...")
-    print(f"  Config: {sam_cfg}")
+    # Initialize SAM3 once
+    print(f"Initializing SAM3 model...")
     print(f"  Checkpoint: {CKPT_PATH}")
     
     if not Path(CKPT_PATH).exists():
@@ -72,7 +70,7 @@ def process_images(images_dir: Path, json_path: Path, out_json_path: Path,
     if device == "cpu":
         print(" Warning: Running on CPU. This will be slow. Consider using a GPU.")
     
-    sam = SAM2Runner(cfg_path=sam_cfg, ckpt_path=CKPT_PATH, device=device)
+    sam = SAM3Runner(ckpt_path=CKPT_PATH, device=device)
 
     print("Starting segmentation...")
 
@@ -152,8 +150,7 @@ def pick_json_file(title: str) -> Path:
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Add SAM2 segmentations to COCO JSON annotations for images.")
-    ap.add_argument("--cfg", default=CFG_PATH_DEFAULT, help="SAM2 config path")
+    ap = argparse.ArgumentParser(description="Add SAM3 segmentations to COCO JSON annotations for images.")
     ap.add_argument("--cat", type=int, default=None, help="Only segment this category_id (e.g. 1). None=all")
     ap.add_argument("--image_exts", default=".png,.jpg,.jpeg",
                     help="Comma-separated image extensions to match")
@@ -182,11 +179,10 @@ def main():
         images_dir=images_dir,
         json_path=json_path,
         out_json_path=out_json,
-        sam_cfg=args.cfg,
         category_filter=args.cat,
     )
 
-    print(f"\n✓ Done! Output: {out_json}")
+    print(f"\n Done! Output: {out_json}")
 
 
 if __name__ == "__main__":

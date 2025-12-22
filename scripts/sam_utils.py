@@ -42,19 +42,21 @@ def _normalize_masks_single_per_box(masks):
     return [(ma > 0).astype(np.uint8)]
 
 
-class SAM2Runner:
+class SAM3Runner:
     """
     Initialize once; call .segment_boxes(frame_bgr, boxes_xywh) per frame.
     Returns one mask per input box.
     """
 
-    def __init__(self, cfg_path: str, ckpt_path: str, device: str | None = None):
+    def __init__(self, ckpt_path: str, device: str | None = None):
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = torch.device(device)
         
-        self.model = build_sam3_image_model(cfg_path, ckpt_path, device=self.device)
+        # Config is handled internally by SAM3
+        self.model = build_sam3_image_model(ckpt_path, device=self.device)##IT ASKS FOR GPU, NEED TO TURN THAT OFF 
         self.processor = Sam3Processor(self.model)
+        
         
 
     def segment_boxes(self, frame_bgr: np.ndarray, boxes_xywh):
@@ -79,8 +81,8 @@ class SAM2Runner:
                                 input_boxes=boxes_xyxy,
                                 input_boxes_labels=[[1]],  # 1 = positive (include this region)
                                 return_tensors="pt"
-                            ).to(self.device) 
-                    
+                            ).to(self.device)
+                    output = self.model(**inputs)
             else:
                 inputs = self.processor(
                                 images=img_rgb,
@@ -88,9 +90,8 @@ class SAM2Runner:
                                 input_boxes=boxes_xyxy,
                                 input_boxes_labels=[[1]],
                                 return_tensors="pt"
-                            ).to(self.device) 
-                
-            output = self.model(**inputs)
+                            ).to(self.device)
+                output = self.model(**inputs)
                 
             masks, _, _scores = output["masks"], output["boxes"], output["scores"]
 
