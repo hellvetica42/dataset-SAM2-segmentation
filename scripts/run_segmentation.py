@@ -9,7 +9,7 @@ from tkinter import Tk, filedialog
 
 # === SAM2 CHECKPOINT ===
 # CHANGE THIS PATH TO YOUR ACTUAL CHECKPOINT LOCATION
-CKPT_PATH = "/home/ubuntu/dataset-SAM2-segmentation/sam3/checkpoints/sam3.pt"  
+CKPT_PATH = "/home/ubuntu/dataset-SAM2-segmentation/sam3/checkpoints/dataset-SAM2-segmentation/sam3/checkpoints"  
 # =======================
 
 from sam_utils import SAM3Runner
