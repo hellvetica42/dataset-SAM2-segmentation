@@ -9,6 +9,7 @@ from sam3.model.sam3_image_processor import Sam3Processor
 
 from transformers import Sam3Processor, Sam3Model
 from PIL import Image
+from negative_points_picker import choose_negative_points
 
 
 def _boxes_xyxy_from_xywh(boxes_xywh):
@@ -52,16 +53,37 @@ class SAM3Runner:
         
         text = "tetra pack carton"
         boxes_xyxy = _boxes_xyxy_from_xywh(boxes_xywh)
+        negative_points = choose_negative_points(pil_image, boxes_xyxy)
         
         with torch.inference_mode():
-            # Process image with BOTH text and box prompts
-            inputs = self.processor(
-                images=pil_image,
-                text=text,
-                input_boxes=[boxes_xyxy],  # List of boxes for the image
-                input_boxes_labels=[[1] * len(boxes_xyxy)],  # 1 = positive prompt for each box
-                return_tensors="pt"
-            ).to(self.device)
+            # Process image with text and box prompts
+            processor_inputs = {
+                "images": pil_image,
+                "text": text,
+                "input_boxes": [boxes_xyxy],
+                "input_boxes_labels": [[1] * len(boxes_xyxy)],
+                "return_tensors": "pt"
+            }
+            
+            # Add negative points if they exist (as additional boxes with label 0)
+            if negative_points:
+                # Convert points to small boxes around each point (1x1 pixel)
+                negative_boxes = []
+                for px, py in negative_points:
+                    # Create tiny box: [x1, y1, x2, y2]
+                    negative_boxes.append([px, py, px + 1, py + 1])
+                
+                # Convert negative_boxes to numpy array
+                negative_boxes = np.array(negative_boxes)
+                
+                # Combine with existing boxes using numpy concatenate
+                all_boxes = np.concatenate([boxes_xyxy, negative_boxes], axis=0)
+                all_labels = [1] * len(boxes_xyxy) + [0] * len(negative_points)
+                
+                processor_inputs["input_boxes"] = [all_boxes]
+                processor_inputs["input_boxes_labels"] = [all_labels]
+            
+            inputs = self.processor(**processor_inputs).to(self.device)
             
             # Run model
             if self.device.type == "cuda":
@@ -79,8 +101,8 @@ class SAM3Runner:
             )[0]
         
         # Extract masks from results
-        pred_masks = results['masks']  # Binary masks at original size
-        pred_boxes = results['boxes']  # xyxy format
+        pred_masks = results['masks']
+        pred_boxes = results['boxes']
         pred_scores = results['scores']
         
         # Match predicted masks to input boxes in order
